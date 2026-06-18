@@ -802,14 +802,7 @@ body.mode-accessibile .chapter-title{
 }
 #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 
-/* ========== HIDDEN YT IFRAME ========== */
-#yt-player-wrap{
-  position:fixed;
-  width:1px;height:1px;
-  left:-9999px;top:-9999px;
-  opacity:0;
-  pointer-events:none;
-}
+/* ========== AUDIO MP3 (nessuna UI: <audio> senza controls è invisibile) ========== */
 
 /* ========== RESPONSIVE — iPad 10.9" landscape (1180x820) / portrait (820x1180) / smaller ========== */
 @media (min-width:1024px){
@@ -994,8 +987,8 @@ body.mode-accessibile .chapter-title{
   </div>
 </aside>
 
-<!-- YouTube player hidden -->
-<div id="yt-player-wrap"><div id="yt-player"></div></div>
+<!-- Audio MP3 (Dropbox) -->
+<audio id="audio-el" preload="metadata" playsinline></audio>
 
 <!-- Toast -->
 <div id="toast"></div>
@@ -1007,11 +1000,11 @@ body.mode-accessibile .chapter-title{
 <script>
 /* ===========================================================
    HARRY POTTER — AUDIOLETTURA SINCRONIZZATA
-   Single-file HTML5 · localStorage · YT IFrame API
+   Single-file HTML5 · localStorage · audio MP3 (Dropbox)
    =========================================================== */
 
 const BOOK = JSON.parse(document.getElementById('book-data').textContent);
-const YT_VIDEO_ID = '3DcFHEjKBcE';
+const AUDIO_URL = 'https://dl.dropboxusercontent.com/scl/fi/irsw1n0tr6j6qwifsltqe/hp2.mp3?rlkey=fk9341ljxa9vfx5mjnswvoncf&dl=1';
 const STORAGE_KEY = 'hp_audiolettura_camerasegreti_v1';
 const AUDIO_INTRO_OFFSET = 2; // secondi di intro nell'audio prima del Capitolo 1
 
@@ -1025,7 +1018,7 @@ let state = {
   audioTime: 0,
   wpmCalibration: 165,      // words per minute iniziale
   chapterAnchors: {},       // { "ch:1": [{paragraphIdx:0, audioTime:0}, ...] } - manuale
-  chapterAudioStart: {},    // { "ch:1": 0 } - quando l'audio di YT arriva all'inizio di ogni capitolo
+  chapterAudioStart: {},    // { "ch:1": 0 } - quando l'audio arriva all'inizio di ogni capitolo
   readChapters: [],
   showNumbers: false,
   reading: {
@@ -1353,8 +1346,7 @@ function resolveParagraphFromAudio(audioTime){
 
 function tickSync(){
   if(!isPlayerReady || !player) return;
-  let t;
-  try{ t = player.getCurrentTime(); }catch(e){ return; }
+  const t = player.currentTime;
   if(!isFinite(t)) return;
   state.audioTime = t;
 
@@ -1370,7 +1362,7 @@ function tickSync(){
 }
 
 function updatePlayerUI(t){
-  const total = durationTotal || (player && player.getDuration ? player.getDuration() : 0);
+  const total = durationTotal || (player && isFinite(player.duration) ? player.duration : 0);
   durationTotal = total;
   document.getElementById('player-time').textContent =
     fmtTime(t) + ' / ' + fmtTime(total);
@@ -1416,7 +1408,7 @@ function goToChapter(n, paragraphIdx=0){
   // Se abbiamo l'inizio audio del capitolo, seek audio
   const audioStart = chapterAudioStartEstimated(n, state.wpmCalibration);
   if(isPlayerReady && player && audioStart != null){
-    try{ player.seekTo(audioStart, true); }catch(e){}
+    try{ player.currentTime = audioStart; }catch(e){}
   }
   renderChapter(n, {paragraphIdx, scroll:true});
   // Segna capitoli precedenti come letti
@@ -1426,55 +1418,52 @@ function goToChapter(n, paragraphIdx=0){
   saveState();
 }
 
-/* ---------- YT API ---------- */
-function onYouTubeIframeAPIReady(){
-  player = new YT.Player('yt-player', {
-    height:'180',
-    width:'320',
-    videoId: YT_VIDEO_ID,
-    playerVars:{
-      autoplay:0,
-      controls:0,
-      disablekb:1,
-      fs:0,
-      iv_load_policy:3,
-      modestbranding:1,
-      playsinline:1,
-      rel:0,
-      enablejsapi:1
-    },
-    events:{
-      onReady: onPlayerReady,
-      onStateChange: onPlayerStateChange,
-      onError: onPlayerError
+/* ---------- AUDIO ENGINE (MP3) ---------- */
+function initAudio(){
+  player = document.getElementById('audio-el');
+  if(!player) return;
+  player.src = AUDIO_URL;
+
+  // Metadati pronti: durata disponibile, posso fare seek e play
+  player.addEventListener('loadedmetadata', ()=>{
+    isPlayerReady = true;
+    durationTotal = isFinite(player.duration) ? player.duration : 0;
+    updatePlayerUI(player.currentTime || 0);
+    // Riposiziona sulla posizione salvata
+    if(state.audioTime && state.audioTime > 2){
+      try{ player.currentTime = state.audioTime; }catch(e){}
     }
   });
-}
-window.onYouTubeIframeAPIReady = onYouTubeIframeAPIReady;
 
-function onPlayerReady(){
-  isPlayerReady = true;
-  try{ durationTotal = player.getDuration(); }catch(e){}
-  updatePlayerUI(player.getCurrentTime ? player.getCurrentTime() : 0);
-  // Se abbiamo salvato una posizione, riposizionati
-  if(state.audioTime && state.audioTime > 2){
-    try{ player.seekTo(state.audioTime, true); }catch(e){}
-  }
-}
-function onPlayerStateChange(e){
-  const s = e.data;
-  if(s === YT.PlayerState.PLAYING){
+  player.addEventListener('play', ()=>{
     isPlaying = true;
     setPlayIcon(false);
     if(!syncInterval) syncInterval = setInterval(tickSync, 400);
-  } else {
+  });
+  player.addEventListener('pause', ()=>{
     isPlaying = false;
     setPlayIcon(true);
-  }
+    if(syncInterval){ clearInterval(syncInterval); syncInterval = null; }
+    saveState();
+  });
+  player.addEventListener('ended', ()=>{
+    isPlaying = false;
+    setPlayIcon(true);
+    if(syncInterval){ clearInterval(syncInterval); syncInterval = null; }
+  });
+  // Aggiorna barra/tempo anche dopo un seek manuale a pausa
+  player.addEventListener('seeked', ()=>{
+    state.audioTime = player.currentTime;
+    updatePlayerUI(player.currentTime);
+  });
+  player.addEventListener('error', ()=>{
+    const err = player.error;
+    toast('Errore audio' + (err ? ' (codice ' + err.code + ')' : ''));
+  });
+
+  player.load();
 }
-function onPlayerError(e){
-  toast('Errore audio: ' + e.data);
-}
+
 function setPlayIcon(showPlay){
   document.getElementById('icon-play').style.display = showPlay ? '' : 'none';
   document.getElementById('icon-pause').style.display = showPlay ? 'none' : '';
@@ -1484,25 +1473,27 @@ function setPlayIcon(showPlay){
 function initPlayerEvents(){
   document.getElementById('btn-playpause').addEventListener('click', ()=>{
     if(!isPlayerReady) { toast('Audio in caricamento…'); return; }
-    if(isPlaying){ player.pauseVideo(); }
-    else { player.playVideo(); }
+    if(isPlaying){ player.pause(); }
+    else {
+      const p = player.play();
+      if(p && p.catch) p.catch(()=> toast("Tocca ancora per avviare l'audio"));
+    }
   });
   document.getElementById('btn-back15').addEventListener('click', ()=>{
     if(!isPlayerReady) return;
-    const t = player.getCurrentTime();
-    player.seekTo(Math.max(0, t-15), true);
+    player.currentTime = Math.max(0, player.currentTime - 15);
   });
   document.getElementById('btn-fwd15').addEventListener('click', ()=>{
     if(!isPlayerReady) return;
-    const t = player.getCurrentTime();
-    player.seekTo(t+15, true);
+    const max = durationTotal || player.duration || Infinity;
+    player.currentTime = Math.min(max, player.currentTime + 15);
   });
   const seek = document.getElementById('player-seek');
   seek.addEventListener('click', (e)=>{
     if(!isPlayerReady || !durationTotal) return;
     const rect = seek.getBoundingClientRect();
     const pct = (e.clientX - rect.left) / rect.width;
-    player.seekTo(pct * durationTotal, true);
+    player.currentTime = pct * durationTotal;
   });
 }
 
@@ -1565,17 +1556,7 @@ function startSession(nick, saved){
   }
 
   saveState();
-  loadYTApi();
-}
-
-function loadYTApi(){
-  if(window.YT && window.YT.Player){
-    onYouTubeIframeAPIReady();
-    return;
-  }
-  const s = document.createElement('script');
-  s.src = 'https://www.youtube.com/iframe_api';
-  document.head.appendChild(s);
+  initAudio();
 }
 
 /* ---------- UI EVENTS ---------- */
@@ -1614,7 +1595,7 @@ function initUIEvents(){
     state.readChapters = [];
     saveState();
     if(isPlayerReady && player){
-      try{ player.pauseVideo(); player.seekTo(0, true); }catch(e){}
+      try{ player.pause(); player.currentTime = 0; }catch(e){}
     }
     document.getElementById('resume-banner').classList.remove('show');
     renderChapter(1, {paragraphIdx:0, scroll:true});
@@ -1626,7 +1607,7 @@ function initUIEvents(){
     if(!confirm('Vuoi cambiare nick? Il segnalibro attuale resta salvato su questo iPad.')) return;
     document.getElementById('screen-reading').classList.remove('active');
     document.getElementById('screen-login').classList.add('active');
-    if(player && isPlaying){ try{ player.pauseVideo(); }catch(e){} }
+    if(player && isPlaying){ try{ player.pause(); }catch(e){} }
   });
 
   // Resume banner
